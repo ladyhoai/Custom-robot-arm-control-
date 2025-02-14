@@ -2,38 +2,12 @@ import numpy as np
 import matplotlib.pyplot as pl
 import scipy as sp
 import sys
+from shapely.geometry import Point, LineString
+from exConvex import exteriorConvexHull
 
 # eps = sys.float_info.epsilon
 def bernstein(n, i, t):
     return sp.special.comb(n, i) * (t ** i) * ((1 - t) ** (n - i))
-
-def compute_sibson_weights(query_point,  vor, points):
-    newPointList = np.vstack([points, query_point])
-    newVor = Voronoi(newPointList)
-
-    newPointIndex = len(points)
-
-    # Index of the new point in the new Voronoi diagram
-    naturalNeighbours = newVor.ridge_points[newVor.ridge_points[:, 0] == newPointIndex, 1]
-
-    # Exclude the new point
-    naturalNeighbours = naturalNeighbours[naturalNeighbours < len(points)]
-
-    stolenAreas = {}
-    newCell = Polygon(newVor.vertices[newVor.regions[newVor.point_region[newPointIndex]]])
-
-    for neighbour in naturalNeighbours:
-        # Get the original Voronoi cell of the neighbor
-        originalCell = Polygon(vor.vertices[vor.regions[vor.point_region[neighbour]]])
-
-        # Compute the intersection
-        stolenArea = newCell.intersection(originalCell).area
-        stolenAreas[neighbour] = stolenArea
-
-    totalStolenArea = sum(stolenAreas.values())
-    sibsonWeights = {neighbour : area / totalStolenArea for neighbour, area in stolenAreas.items()}
-
-    return sibsonWeights
 
 def bezier_curve(t, P):
     """Compute a cubic Bézier curve given control points P."""
@@ -45,6 +19,46 @@ def in_box(towers, bounding_box):
                           np.logical_and(bounding_box[2] <= towers[:, 1],
                                          towers[:, 1] <= bounding_box[3]))
 
+def points_equal(p1, p2, tolerance=1e-4):
+    return np.allclose(p1, p2, atol=tolerance)
+
+# Function to find the third vertex of a triangle containing P1 and P2
+def find_third_vertex(simplices, points, P1, P2, tolerance=1e-4):
+    for simplex in simplices:
+        # Extract the triangle vertices
+        triangle_vertices = [points[simplex[0]], points[simplex[1]], points[simplex[2]]]
+        
+        # Check if P1 and P2 are in the triangle (with tolerance)
+        if any(points_equal(P1, vertex, tolerance) for vertex in triangle_vertices) and \
+           any(points_equal(P2, vertex, tolerance) for vertex in triangle_vertices):
+            # Find the third vertex of the triangle
+            third_vertex = [vertex for vertex in triangle_vertices if not (points_equal(P1, vertex, tolerance) or points_equal(P2, vertex, tolerance))]
+            return third_vertex[0]
+    return None
+
+def barycentric_coordinates(triangle, point):
+    # Unpack the triangle vertices (A, B, C) and the point (P)
+    A, B, C = triangle
+    P = point
+
+    # Calculate the area of the triangle ABC
+    area_total = abs(A[0] * (B[1] - C[1]) + B[0] * (C[1] - A[1]) + C[0] * (A[1] - B[1])) / 2
+
+    # Calculate the area of sub-triangle PBC
+    area_PBC = abs(P[0] * (B[1] - C[1]) + B[0] * (C[1] - P[1]) + C[0] * (P[1] - B[1])) / 2
+
+    # Calculate the area of sub-triangle PCA
+    area_PCA = abs(A[0] * (P[1] - C[1]) + P[0] * (C[1] - A[1]) + C[0] * (A[1] - P[1])) / 2
+
+    # Calculate the area of sub-triangle PAB
+    area_PAB = abs(A[0] * (B[1] - P[1]) + B[0] * (P[1] - A[1]) + P[0] * (A[1] - B[1])) / 2
+
+    # Calculate the barycentric coordinates
+    lambda_1 = area_PBC / area_total
+    lambda_2 = area_PCA / area_total
+    lambda_3 = area_PAB / area_total
+
+    return (lambda_1, lambda_2, lambda_3)
 
 def voronoi(towers, bounding_box):
     # Select towers inside the bounding box
@@ -102,6 +116,29 @@ def centroid_region(vertices):
     C_y = (1.0 / (6.0 * A)) * C_y
     return np.array([[C_x, C_y]])
 
+def calculate_first_slope(bezier_order, control_point, bezier_point):
+    sumBernstein = 0
+    for i in range(bezier_order - 1):
+        product = np.outer(bernstein(bezier_order - 1, i, bezier_point), control_point[i + 1] - control_point[i])
+        sumBernstein = sumBernstein + product
+    
+    return sumBernstein * bezier_order
+
+def calculate_second_slope(bezier_order, control_point, bezier_point):
+    sumBernstein = 0
+    for i in range(bezier_order - 2):
+        product = np.outer(bernstein(bezier_order - 2, i, bezier_point), control_point[i + 2] - 2 * control_point[i + 1] + control_point[i])
+        sumBernstein = sumBernstein + product
+
+    return bezier_order * (bezier_order - 1) * product
+
+fig = pl.figure()
+
+ax = fig.gca()
+
+np.set_printoptions(precision=3, suppress=True)  # Set printing precision
+ax.set_xlim([-1.5, 1.5])
+ax.set_ylim([-1.5, 1.5])
 
 # Define grid size
 N = 100
@@ -117,7 +154,6 @@ P = np.array([[-0.8, -0.8], [-0.4, -0.8], [0.2, 1], [0.8, 0.8]])
 
 # Generate Bézier curve points
 T = np.linspace(0, 1, 18)
-print(len(T))
 bezier_points = np.array([bezier_curve(t, P) for t in T])
 
 # Create Delaunay triangulation using scipy's Delaunay
@@ -125,6 +161,12 @@ delaunay = sp.spatial.Delaunay(bezier_points)
 
 # Compute convex hull
 hull = sp.spatial.ConvexHull(bezier_points)
+
+hull_vertices = np.round(bezier_points[hull.vertices], 3)
+
+outerHull = exteriorConvexHull(hull_vertices.tolist(), -1, -1, 1, 1)
+
+delaunayHull = sp.spatial.Delaunay(hull_vertices)
 
 grid_points = np.vstack([X.ravel(), Y.ravel()]).T
 
@@ -134,15 +176,9 @@ bounding_box = np.array([-1, 1, -1, 1]) # [x_min, x_max, y_min, y_max]
 
 vor = voronoi(bezier_points, bounding_box)
 
-fig = pl.figure()
-
-ax = fig.gca()
-
-np.set_printoptions(precision=3, suppress=True)  # Set printing precision
-ax.set_xlim([-1.1, 1.1])
-ax.set_ylim([-1.1, 1.1])
-
 area = []
+
+normalisation_const = 2
 
 # Calculating the area for each polygon in the Voronoi diagram
 for i in range(len(vor.filtered_regions)):
@@ -198,13 +234,7 @@ for point in grid_points:
         slopeAtPoint = 0
 
         for i in range(len(areaPercentage)):
-            sumBernstein = 0
-            for y in range(gradeBezier - 1):
-                product = np.outer(bernstein(gradeBezier - 1, y, T[i]), P[y + 1] - P[y])
-                sumBernstein = sumBernstein + product
-            
-            sumBernstein = sumBernstein * gradeBezier
-            slopeAtPoint = slopeAtPoint + (areaPercentage[i] * sumBernstein)
+            slopeAtPoint = slopeAtPoint + (areaPercentage[i] * calculate_first_slope(gradeBezier, P, T[i]))
         
         bezier_points = bezier_points[:-1]
         # pl.pause(0.1)
@@ -214,8 +244,34 @@ for point in grid_points:
 
     
     else:
-        slopeListX = slopeListX + [0]
-        slopeListY = slopeListY + [0]
+        found = False
+        for object in outerHull:
+            if object[0].find_simplex(point) != -1:
+                found = True
+                xyOut = None
+                if object[1] == "tri":
+                    # print(object[2][0][0])
+                    xyOut = calculate_first_slope(gradeBezier, P, object[2][0][0]) + calculate_second_slope(gradeBezier, P, object[2][0][0]) \
+                          * (np.linalg.norm(point - object[2][0]) / normalisation_const) 
+                    
+                elif object[1] == "rect":
+                    vertex3 = find_third_vertex(delaunayHull.simplices, hull_vertices, object[2][0], object[2][1])
+                    line = LineString([object[2][0], object[2][1]])
+                    projected_point = line.interpolate(line.project(Point(point[0], point[1])))
+                    lambda_1, lambda_2, lambda_3 = barycentric_coordinates([vertex3, object[2][0], object[2][1]], [projected_point.x, projected_point.y])
+                    firstInter = lambda_2 * (calculate_first_slope(gradeBezier, P, object[2][0][0]) + calculate_second_slope(gradeBezier, P, object[2][0][0]) \
+                                            * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
+                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, object[2][0][1]) + calculate_second_slope(gradeBezier, P, object[2][0][1]) \
+                                            * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
+                    xyOut = firstInter + secondInter
+
+                slopeListX = slopeListX + [xyOut[0][0]]
+                slopeListY = slopeListY + [xyOut[0][1]]
+                break
+
+        if not found:    
+            slopeListX = slopeListX + [0]
+            slopeListY = slopeListY + [0]
         
 
 slopeArrX = np.array(slopeListX)
@@ -226,13 +282,19 @@ u = slopeArrX.reshape(100, 100)
 v = slopeArrY.reshape(100, 100)
 
 # xv, yv = np.meshgrid(slopeListX, slopeListY)
-for simplex in hull.simplices:
-    ax.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'b-', label='Convex Hull' if simplex[0] == hull.simplices[0][0] else "")
+# for simplex in hull.simplices:
+#     ax.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'b-', label='Convex Hull' if simplex[0] == hull.simplices[0][0] else "")
         
-pl.streamplot(X, Y, u, v, color='black', density=4)
+pl.streamplot(X, Y, u, v, color='black', density=2)
 pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
-# pl.scatter(inside_hull[:, 0], inside_hull[:, 1], color='blue', alpha=0.3, s=1, label='Points Inside Hull')
-np.savetxt("gridpoint.txt", grid_points, fmt="%.6f", delimiter=",")
+# for simplex in hull.simplices:
+#     pl.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'g-', linewidth=2, label='Convex Hull' if 'Convex Hull' not in pl.gca().get_legend_handles_labels()[1] else "")
+
+# for i in hull.vertices:
+#     print(bezier_points[i])
+
+pl.pause(2)
+
 
 pl.show()
 
