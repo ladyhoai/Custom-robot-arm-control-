@@ -34,13 +34,14 @@ def perpendicular_line(line, bounding_box, length=4, from_beginning=True, direct
 
     return original_line.intersection(bounding_box)
 
-def exteriorConvexHull(hull, minx, miny, maxx, maxy):
+def exteriorConvexHull(hull, hull_vertices, minx, miny, maxx, maxy):
     hull = np.array(hull + [hull[0]])
+    hull_vertices = (hull_vertices + [hull_vertices[0]])
+    hull_vertices_new = []
     
     bbox = box(minx, miny, maxx, maxy)
     bbox_array = [[maxx, maxy], [minx, maxy], [maxx, miny], [minx, miny]]
     
-    xBox, yBox = bbox.exterior.xy
     perp_line = np.empty((0, 4))
     resultingHull = []
 
@@ -57,9 +58,13 @@ def exteriorConvexHull(hull, minx, miny, maxx, maxy):
 
         perp_line = np.vstack((perp_line, [px1[0], py1[0], px1[1], py1[1]]))
         perp_line = np.vstack((perp_line, [px2[0], py2[0], px2[1], py2[1]]))
-    
-    perp_line = np.vstack((perp_line, perp_line[0]))
 
+        hull_vertices_new = hull_vertices_new + [hull_vertices[point]]
+        hull_vertices_new = hull_vertices_new + [hull_vertices[point + 1]]
+
+    perp_line = np.vstack((perp_line, perp_line[0]))
+    hull_vertices_new = hull_vertices_new + [hull_vertices_new[0]]
+    
     for i in range(len(perp_line) - 1):
         currentHullPoint = [
             [perp_line[i][0], perp_line[i][1]], [perp_line[i][2], perp_line[i][3]], 
@@ -74,15 +79,15 @@ def exteriorConvexHull(hull, minx, miny, maxx, maxy):
                
         convexType = "rect"
         originalHullIntersect = [currentHullPoint[0], currentHullPoint[2]]
+        originalHullIntersectIndex = [hull_vertices_new[i], hull_vertices_new[i+1]]
         if (np.allclose(currentHullPoint[0], currentHullPoint[2], atol=1e-4)):
             convexType = "tri"
             originalHullIntersect = [currentHullPoint[0]]
+            originalHullIntersectIndex = [hull_vertices_new[i]]
 
         region = sp.spatial.Delaunay(currentHullPoint)
         currentHullPoint = np.array(currentHullPoint)
-        # plt.triplot(currentHullPoint[:, 0], currentHullPoint[:, 1], region.simplices, 'k-')  # Draw triangle edges
-
-        resultingHull.append([region, convexType, originalHullIntersect])
+        resultingHull.append([region, convexType, originalHullIntersect, originalHullIntersectIndex])
 
     return resultingHull
 
