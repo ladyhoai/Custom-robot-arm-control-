@@ -4,6 +4,9 @@ import scipy as sp
 import sys
 from shapely.geometry import Point, LineString
 from exConvex import exteriorConvexHull
+from scipy.ndimage import gaussian_filter
+from scipy.ndimage import map_coordinates
+import lic
 
 # eps = sys.float_info.epsilon
 def bernstein(n, i, t):
@@ -130,7 +133,69 @@ def calculate_second_slope(bezier_order, control_point, bezier_point):
         product = np.outer(bernstein(bezier_order - 2, i, bezier_point), control_point[i + 2] - 2 * control_point[i + 1] + control_point[i])
         sumBernstein = sumBernstein + product
 
-    return bezier_order * (bezier_order - 1) * product
+    return bezier_order * (bezier_order - 1) * sumBernstein
+
+def line_integral_convolution(vector_field, noise_texture, kernel_length=20, steps=10):
+    """
+    Perform Line Integral Convolution (LIC) on a 2D vector field.
+
+    Parameters:
+    - vector_field: 2D array of shape (height, width, 2) representing the vector field (u, v).
+    - noise_texture: 2D array of shape (height, width) representing the noise texture.
+    - kernel_length: Length of the convolution kernel (default: 20).
+    - steps: Number of steps to integrate along the vector field (default: 10).
+
+    Returns:
+    - lic_image: 2D array of shape (height, width) representing the LIC image.
+    """
+    height, width, _ = vector_field.shape
+    lic_image = np.zeros_like(noise_texture)
+
+    # Normalize the vector field
+    magnitude = np.sqrt(vector_field[:, :, 0]**2 + vector_field[:, :, 1]**2)
+    vector_field[:, :, 0] /= magnitude + 1e-10
+    vector_field[:, :, 1] /= magnitude + 1e-10
+
+    # Iterate over each pixel
+    for y in range(height):
+        for x in range(width):
+            # Initialize the integral curve
+            curve = []
+            curve.append((y, x))
+
+            # Integrate forward
+            current_y, current_x = y, x
+            for _ in range(steps):
+                u, v = vector_field[int(current_y), int(current_x)]
+                current_y += v
+                current_x += u
+                if current_y < 0 or current_y >= height or current_x < 0 or current_x >= width:
+                    break
+                curve.append((current_y, current_x))
+
+            # Integrate backward
+            current_y, current_x = y, x
+            for _ in range(steps):
+                u, v = vector_field[int(current_y), int(current_x)]
+                current_y -= v
+                current_x -= u
+                if current_y < 0 or current_y >= height or current_x < 0 or current_x >= width:
+                    break
+                curve.insert(0, (current_y, current_x))
+
+            # Sample the noise texture along the curve
+            curve = np.array(curve)
+            sampled_values = map_coordinates(noise_texture, curve.T, order=1)
+
+            # Convolve with a kernel (e.g., a box filter)
+            kernel = np.ones(kernel_length) / kernel_length
+            convolved_value = np.convolve(sampled_values, kernel, mode='valid')
+
+            # Assign the result to the LIC image
+            lic_image[y, x] = convolved_value[len(convolved_value) // 2]
+
+    return lic_image
+
 
 fig = pl.figure()
 
@@ -178,7 +243,7 @@ vor = voronoi(bezier_points, bounding_box)
 
 area = []
 
-normalisation_const = 2
+normalisation_const = 5
 
 # Calculating the area for each polygon in the Voronoi diagram
 for i in range(len(vor.filtered_regions)):
@@ -220,11 +285,11 @@ for point in grid_points:
             #ax.plot(vertices[:, 0], vertices[:, 1], 'k-')
 
         # print(len(area), len(areaUpdated))
-        if len(areaUpdated) < 19:
+        if len(areaUpdated) < len(T) + 1:
             # print(point)
             bezier_points = bezier_points[:-1]
-            slopeListX = slopeListX + [0]
-            slopeListY = slopeListY + [0]
+            slopeListX = slopeListX + [1e-4]
+            slopeListY = slopeListY + [1e-4]
             failedVor = failedVor + 1
             continue
 
@@ -261,7 +326,7 @@ for point in grid_points:
                     lambda_1, lambda_2, lambda_3 = barycentric_coordinates([vertex3, object[2][0], object[2][1]], [projected_point.x, projected_point.y])
                     firstInter = lambda_2 * (calculate_first_slope(gradeBezier, P, object[2][0][0]) + calculate_second_slope(gradeBezier, P, object[2][0][0]) \
                                             * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
-                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, object[2][0][1]) + calculate_second_slope(gradeBezier, P, object[2][0][1]) \
+                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, object[2][1][0]) + calculate_second_slope(gradeBezier, P, object[2][1][0]) \
                                             * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
                     xyOut = firstInter + secondInter
 
@@ -270,8 +335,9 @@ for point in grid_points:
                 break
 
         if not found:    
-            slopeListX = slopeListX + [0]
-            slopeListY = slopeListY + [0]
+            print("cannot bound")
+            slopeListX = slopeListX + [1e-4]
+            slopeListY = slopeListY + [1e-4]
         
 
 slopeArrX = np.array(slopeListX)
@@ -281,19 +347,29 @@ print(failedVor)
 u = slopeArrX.reshape(100, 100)
 v = slopeArrY.reshape(100, 100)
 
+vector_field = np.stack((u, v), axis=-1)
+
+lic_image = line_integral_convolution(vector_field, np.random.rand(100, 100))
+
+pl.streamplot(X, Y, u, v, color='black', density=2)
+pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
+pl.imsave("lic.png", lic_image, cmap='gray')
+
+pl.show()
+
+# Plot the LIC image
+
 # xv, yv = np.meshgrid(slopeListX, slopeListY)
 # for simplex in hull.simplices:
 #     ax.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'b-', label='Convex Hull' if simplex[0] == hull.simplices[0][0] else "")
         
-pl.streamplot(X, Y, u, v, color='black', density=2)
-pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
+# pl.streamplot(X, Y, u, v, color='black', density=2)
+# pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
 # for simplex in hull.simplices:
 #     pl.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'g-', linewidth=2, label='Convex Hull' if 'Convex Hull' not in pl.gca().get_legend_handles_labels()[1] else "")
 
 # for i in hull.vertices:
 #     print(bezier_points[i])
-
-pl.pause(2)
 
 
 pl.show()
