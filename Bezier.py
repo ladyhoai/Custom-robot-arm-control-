@@ -215,11 +215,13 @@ X, Y = np.meshgrid(x, y)
 gradeBezier = 4
 
 # Control points for an S-shaped cubic Bézier curve
-P = np.array([[-0.8, -0.8], [-0.4, -0.8], [0.2, 1], [0.8, 0.8]])
+P = np.array([[-0.8, -0.8], [-0.4, 0.8], [0.2, 1], [0.8, 0.8]])
 
 # Generate Bézier curve points
-T = np.linspace(0, 1, 18)
+T = np.linspace(0, 1-(1e-8), 18)
 bezier_points = np.array([bezier_curve(t, P) for t in T])
+# print(bezier_points)
+# print("--------------------------------------------------")
 
 # Create Delaunay triangulation using scipy's Delaunay
 delaunay = sp.spatial.Delaunay(bezier_points)
@@ -229,7 +231,7 @@ hull = sp.spatial.ConvexHull(bezier_points)
 
 hull_vertices = np.round(bezier_points[hull.vertices], 3)
 
-outerHull = exteriorConvexHull(hull_vertices.tolist(), -1, -1, 1, 1)
+outerHull = exteriorConvexHull(hull_vertices.tolist(), hull.vertices.tolist(), -1, -1, 1, 1)
 
 delaunayHull = sp.spatial.Delaunay(hull_vertices)
 
@@ -247,35 +249,21 @@ normalisation_const = 5
 
 # Calculating the area for each polygon in the Voronoi diagram
 for i in range(len(vor.filtered_regions)):
-    # ax.plot(bezier_points[i, 0], bezier_points[i, 1], 'b.')
-    # pl.draw()
-    # pl.pause(0.5)
-
     regionIndex = vor.point_region[i]
     region = vor.regions[regionIndex]
     vertices = vor.vertices[region + [region[0]], :]
-
     area = area +  [sp.spatial.ConvexHull(vor.vertices[region, :]).volume]
 
-    # ax.plot(vertices[:, 0], vertices[:, 1], 'k-')
-
-    # pl.draw()
-    # pl.pause(0.5)
 slopeListX = []
 slopeListY = []
 failedVor = 0
 
 for point in grid_points:
     if delaunay.find_simplex(point) != -1:
-
         bezier_points = np.vstack([bezier_points, point])
         vorUpdated = voronoi(bezier_points, bounding_box)
-
         areaUpdated = []
         areaPercentage = []
-        # ax.cla()
-        # ax.scatter(bezier_points[:, 0], bezier_points[:, 1], color='red', zorder=5)
-        # pl.draw()
 
         for i in range(len(vorUpdated.filtered_regions)):
             regionIndex = vorUpdated.point_region[i]
@@ -284,9 +272,7 @@ for point in grid_points:
             areaUpdated = areaUpdated +  [sp.spatial.ConvexHull(vorUpdated.vertices[region, :]).volume]
             #ax.plot(vertices[:, 0], vertices[:, 1], 'k-')
 
-        # print(len(area), len(areaUpdated))
         if len(areaUpdated) < len(T) + 1:
-            # print(point)
             bezier_points = bezier_points[:-1]
             slopeListX = slopeListX + [1e-4]
             slopeListY = slopeListY + [1e-4]
@@ -302,12 +288,9 @@ for point in grid_points:
             slopeAtPoint = slopeAtPoint + (areaPercentage[i] * calculate_first_slope(gradeBezier, P, T[i]))
         
         bezier_points = bezier_points[:-1]
-        # pl.pause(0.1)
-        # print(slopeAtPoint[0])
         slopeListX = slopeListX + [slopeAtPoint[0][0]]
         slopeListY = slopeListY + [slopeAtPoint[0][1]]
 
-    
     else:
         found = False
         for object in outerHull:
@@ -315,18 +298,17 @@ for point in grid_points:
                 found = True
                 xyOut = None
                 if object[1] == "tri":
-                    # print(object[2][0][0])
-                    xyOut = calculate_first_slope(gradeBezier, P, object[2][0][0]) + calculate_second_slope(gradeBezier, P, object[2][0][0]) \
-                          * (np.linalg.norm(point - object[2][0]) / normalisation_const) 
+                    xyOut = calculate_first_slope(gradeBezier, P, T[object[3][0]]) + (calculate_second_slope(gradeBezier, P, T[object[3][0]]) * \
+                                                (np.linalg.norm(point - object[2][0]) / normalisation_const)) 
                     
                 elif object[1] == "rect":
                     vertex3 = find_third_vertex(delaunayHull.simplices, hull_vertices, object[2][0], object[2][1])
                     line = LineString([object[2][0], object[2][1]])
                     projected_point = line.interpolate(line.project(Point(point[0], point[1])))
                     lambda_1, lambda_2, lambda_3 = barycentric_coordinates([vertex3, object[2][0], object[2][1]], [projected_point.x, projected_point.y])
-                    firstInter = lambda_2 * (calculate_first_slope(gradeBezier, P, object[2][0][0]) + calculate_second_slope(gradeBezier, P, object[2][0][0]) \
+                    firstInter = lambda_2 * (calculate_first_slope(gradeBezier, P, T[object[3][0]]) + calculate_second_slope(gradeBezier, P, T[object[3][0]]) \
                                             * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
-                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, object[2][1][0]) + calculate_second_slope(gradeBezier, P, object[2][1][0]) \
+                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, T[object[3][1]]) + calculate_second_slope(gradeBezier, P, T[object[3][1]]) \
                                             * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
                     xyOut = firstInter + secondInter
 
@@ -351,26 +333,8 @@ vector_field = np.stack((u, v), axis=-1)
 
 lic_image = line_integral_convolution(vector_field, np.random.rand(100, 100))
 
-pl.streamplot(X, Y, u, v, color='black', density=2)
+pl.streamplot(X, Y, u, v, color='black', density=4)
 pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
 pl.imsave("lic.png", lic_image, cmap='gray')
-
-pl.show()
-
-# Plot the LIC image
-
-# xv, yv = np.meshgrid(slopeListX, slopeListY)
-# for simplex in hull.simplices:
-#     ax.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'b-', label='Convex Hull' if simplex[0] == hull.simplices[0][0] else "")
-        
-# pl.streamplot(X, Y, u, v, color='black', density=2)
-# pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
-# for simplex in hull.simplices:
-#     pl.plot(bezier_points[simplex, 0], bezier_points[simplex, 1], 'g-', linewidth=2, label='Convex Hull' if 'Convex Hull' not in pl.gca().get_legend_handles_labels()[1] else "")
-
-# for i in hull.vertices:
-#     print(bezier_points[i])
-
-
 pl.show()
 
