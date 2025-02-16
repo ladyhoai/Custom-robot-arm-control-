@@ -8,7 +8,6 @@ from scipy.ndimage import gaussian_filter
 from scipy.ndimage import map_coordinates
 import lic
 
-# eps = sys.float_info.epsilon
 def bernstein(n, i, t):
     return sp.special.comb(n, i) * (t ** i) * ((1 - t) ** (n - i))
 
@@ -197,144 +196,119 @@ def line_integral_convolution(vector_field, noise_texture, kernel_length=20, ste
     return lic_image
 
 
-fig = pl.figure()
+def vector_field(control_points, x_min, x_max, y_min, y_max, grid_size=100):
 
-ax = fig.gca()
+    x = np.linspace(-1, 1, grid_size)
+    y = np.linspace(-1, 1, grid_size)
+    X, Y = np.meshgrid(x, y)
 
-np.set_printoptions(precision=3, suppress=True)  # Set printing precision
-ax.set_xlim([-1.5, 1.5])
-ax.set_ylim([-1.5, 1.5])
+    #IMPORTANT, this number changes everything
+    gradeBezier = 4
 
-# Define grid size
-N = 100
-x = np.linspace(-1, 1, N)
-y = np.linspace(-1, 1, N)
-X, Y = np.meshgrid(x, y)
+    # Generate Bézier curve points
+    T = np.linspace(0, 1-(1e-8), 18)
+    bezier_points = np.array([bezier_curve(t, control_points) for t in T])
 
-#IMPORTANT, this number changes everything
-gradeBezier = 4
+    # Create Delaunay triangulation using scipy's Delaunay
+    delaunay = sp.spatial.Delaunay(bezier_points)
 
-# Control points for an S-shaped cubic Bézier curve
-P = np.array([[-0.8, -0.8], [-0.4, 0.8], [0.2, 1], [0.8, 0.8]])
+    # Compute convex hull
+    hull = sp.spatial.ConvexHull(bezier_points)
 
-# Generate Bézier curve points
-T = np.linspace(0, 1-(1e-8), 18)
-bezier_points = np.array([bezier_curve(t, P) for t in T])
-# print(bezier_points)
-# print("--------------------------------------------------")
+    hull_vertices = np.round(bezier_points[hull.vertices], 3)
 
-# Create Delaunay triangulation using scipy's Delaunay
-delaunay = sp.spatial.Delaunay(bezier_points)
+    outerHull = exteriorConvexHull(hull_vertices.tolist(), hull.vertices.tolist(), x_min, y_min, x_max, y_max)
 
-# Compute convex hull
-hull = sp.spatial.ConvexHull(bezier_points)
+    delaunayHull = sp.spatial.Delaunay(hull_vertices)
 
-hull_vertices = np.round(bezier_points[hull.vertices], 3)
+    grid_points = np.vstack([X.ravel(), Y.ravel()]).T
 
-outerHull = exteriorConvexHull(hull_vertices.tolist(), hull.vertices.tolist(), -1, -1, 1, 1)
+    bounding_box = np.array([x_min, x_max, y_min, y_max]) # [x_min, x_max, y_min, y_max]
 
-delaunayHull = sp.spatial.Delaunay(hull_vertices)
+    vor = voronoi(bezier_points, bounding_box)
 
-grid_points = np.vstack([X.ravel(), Y.ravel()]).T
+    area = []
 
-query_point = np.array([-0.25, -0.25])
+    normalisation_const = 5
 
-bounding_box = np.array([-1, 1, -1, 1]) # [x_min, x_max, y_min, y_max]
+    # Calculating the area for each polygon in the Voronoi diagram
+    for i in range(len(vor.filtered_regions)):
+        regionIndex = vor.point_region[i]
+        region = vor.regions[regionIndex]
+        vertices = vor.vertices[region + [region[0]], :]
+        area = area +  [sp.spatial.ConvexHull(vor.vertices[region, :]).volume]
 
-vor = voronoi(bezier_points, bounding_box)
+    slopeListX = []
+    slopeListY = []
+    failedVor = 0
 
-area = []
+    for point in grid_points:
+        if delaunay.find_simplex(point) != -1:
+            bezier_points = np.vstack([bezier_points, point])
+            vorUpdated = voronoi(bezier_points, bounding_box)
+            areaUpdated = []
+            areaPercentage = []
 
-normalisation_const = 5
+            for i in range(len(vorUpdated.filtered_regions)):
+                regionIndex = vorUpdated.point_region[i]
+                region = vorUpdated.regions[regionIndex]
+                vertices = vorUpdated.vertices[region + [region[0]], :]
+                areaUpdated = areaUpdated +  [sp.spatial.ConvexHull(vorUpdated.vertices[region, :]).volume]
+                #ax.plot(vertices[:, 0], vertices[:, 1], 'k-')
 
-# Calculating the area for each polygon in the Voronoi diagram
-for i in range(len(vor.filtered_regions)):
-    regionIndex = vor.point_region[i]
-    region = vor.regions[regionIndex]
-    vertices = vor.vertices[region + [region[0]], :]
-    area = area +  [sp.spatial.ConvexHull(vor.vertices[region, :]).volume]
+            if len(areaUpdated) < len(T) + 1:
+                bezier_points = bezier_points[:-1]
+                slopeListX = slopeListX + [1e-4]
+                slopeListY = slopeListY + [1e-4]
+                failedVor = failedVor + 1
+                continue
 
-slopeListX = []
-slopeListY = []
-failedVor = 0
+            for i in range(len(area)):
+                areaPercentage = areaPercentage + [abs(area[i] - areaUpdated[i]) / areaUpdated[-1]]
 
-for point in grid_points:
-    if delaunay.find_simplex(point) != -1:
-        bezier_points = np.vstack([bezier_points, point])
-        vorUpdated = voronoi(bezier_points, bounding_box)
-        areaUpdated = []
-        areaPercentage = []
+            slopeAtPoint = 0
 
-        for i in range(len(vorUpdated.filtered_regions)):
-            regionIndex = vorUpdated.point_region[i]
-            region = vorUpdated.regions[regionIndex]
-            vertices = vorUpdated.vertices[region + [region[0]], :]
-            areaUpdated = areaUpdated +  [sp.spatial.ConvexHull(vorUpdated.vertices[region, :]).volume]
-            #ax.plot(vertices[:, 0], vertices[:, 1], 'k-')
-
-        if len(areaUpdated) < len(T) + 1:
+            for i in range(len(areaPercentage)):
+                slopeAtPoint = slopeAtPoint + (areaPercentage[i] * calculate_first_slope(gradeBezier, control_points, T[i]))
+            
             bezier_points = bezier_points[:-1]
-            slopeListX = slopeListX + [1e-4]
-            slopeListY = slopeListY + [1e-4]
-            failedVor = failedVor + 1
-            continue
+            slopeListX = slopeListX + [slopeAtPoint[0][0]]
+            slopeListY = slopeListY + [slopeAtPoint[0][1]]
 
-        for i in range(len(area)):
-            areaPercentage = areaPercentage + [abs(area[i] - areaUpdated[i]) / areaUpdated[-1]]
+        else:
+            found = False
+            for object in outerHull:
+                if object[0].find_simplex(point) != -1:
+                    found = True
+                    xyOut = None
+                    if object[1] == "tri":
+                        xyOut = calculate_first_slope(gradeBezier, control_points, T[object[3][0]]) + (calculate_second_slope(gradeBezier, control_points, T[object[3][0]]) * \
+                                                    (np.linalg.norm(point - object[2][0]) / normalisation_const)) 
+                        
+                    elif object[1] == "rect":
+                        vertex3 = find_third_vertex(delaunayHull.simplices, hull_vertices, object[2][0], object[2][1])
+                        line = LineString([object[2][0], object[2][1]])
+                        projected_point = line.interpolate(line.project(Point(point[0], point[1])))
+                        lambda_1, lambda_2, lambda_3 = barycentric_coordinates([vertex3, object[2][0], object[2][1]], [projected_point.x, projected_point.y])
+                        firstInter = lambda_2 * (calculate_first_slope(gradeBezier, control_points, T[object[3][0]]) + calculate_second_slope(gradeBezier, control_points, T[object[3][0]]) \
+                                                * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
+                        secondInter = lambda_3 * (calculate_first_slope(gradeBezier, control_points, T[object[3][1]]) + calculate_second_slope(gradeBezier, control_points, T[object[3][1]]) \
+                                                * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
+                        xyOut = firstInter + secondInter
 
-        slopeAtPoint = 0
+                    slopeListX = slopeListX + [xyOut[0][0]]
+                    slopeListY = slopeListY + [xyOut[0][1]]
+                    break
 
-        for i in range(len(areaPercentage)):
-            slopeAtPoint = slopeAtPoint + (areaPercentage[i] * calculate_first_slope(gradeBezier, P, T[i]))
-        
-        bezier_points = bezier_points[:-1]
-        slopeListX = slopeListX + [slopeAtPoint[0][0]]
-        slopeListY = slopeListY + [slopeAtPoint[0][1]]
+            if not found:    
+                slopeListX = slopeListX + [1e-4]
+                slopeListY = slopeListY + [1e-4]
 
-    else:
-        found = False
-        for object in outerHull:
-            if object[0].find_simplex(point) != -1:
-                found = True
-                xyOut = None
-                if object[1] == "tri":
-                    xyOut = calculate_first_slope(gradeBezier, P, T[object[3][0]]) + (calculate_second_slope(gradeBezier, P, T[object[3][0]]) * \
-                                                (np.linalg.norm(point - object[2][0]) / normalisation_const)) 
-                    
-                elif object[1] == "rect":
-                    vertex3 = find_third_vertex(delaunayHull.simplices, hull_vertices, object[2][0], object[2][1])
-                    line = LineString([object[2][0], object[2][1]])
-                    projected_point = line.interpolate(line.project(Point(point[0], point[1])))
-                    lambda_1, lambda_2, lambda_3 = barycentric_coordinates([vertex3, object[2][0], object[2][1]], [projected_point.x, projected_point.y])
-                    firstInter = lambda_2 * (calculate_first_slope(gradeBezier, P, T[object[3][0]]) + calculate_second_slope(gradeBezier, P, T[object[3][0]]) \
-                                            * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
-                    secondInter = lambda_3 * (calculate_first_slope(gradeBezier, P, T[object[3][1]]) + calculate_second_slope(gradeBezier, P, T[object[3][1]]) \
-                                            * (np.linalg.norm(point - [projected_point.x, projected_point.y]) / normalisation_const))
-                    xyOut = firstInter + secondInter
+    print("Failed tesselation:", failedVor)
+    u = np.array(slopeListX).reshape(grid_size, grid_size)
+    v = np.array(slopeListY).reshape(grid_size, grid_size)
 
-                slopeListX = slopeListX + [xyOut[0][0]]
-                slopeListY = slopeListY + [xyOut[0][1]]
-                break
+    vector_field = np.stack((u, v), axis=-1)
+    return vector_field
 
-        if not found:    
-            print("cannot bound")
-            slopeListX = slopeListX + [1e-4]
-            slopeListY = slopeListY + [1e-4]
-        
-
-slopeArrX = np.array(slopeListX)
-slopeArrY = np.array(slopeListY)
-
-print(failedVor)
-u = slopeArrX.reshape(100, 100)
-v = slopeArrY.reshape(100, 100)
-
-vector_field = np.stack((u, v), axis=-1)
-
-lic_image = line_integral_convolution(vector_field, np.random.rand(100, 100))
-
-pl.streamplot(X, Y, u, v, color='black', density=4)
-pl.scatter(bezier_points[:, 0], bezier_points[:, 1], color='blue', s=50, label='Bézier Points')
-pl.imsave("lic.png", lic_image, cmap='gray')
-pl.show()
-
+#End of Code
